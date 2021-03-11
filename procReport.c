@@ -11,6 +11,9 @@
  * 4. Number of non-contiguously allocated pages 
  * 5. Total number allocated pages
  *
+ * To display the procfile the seq_file iterator is used. More details can be found in the linux source
+ * at Documentation/filesystems/seq_file.rst.
+ *
  * Spencer Little - mrlittle@uw.edu
  */
 
@@ -42,64 +45,131 @@ static const struct seq_operations ct_seq_ops = {
 static const struct proc_ops ct_file_ops = {
     .proc_open    = ct_open,
     .proc_read    = seq_read,
-    .proc_lseek  = seq_lseek,
+    .proc_lseek   = seq_lseek,
     .proc_release = seq_release
 };
 
 /*
- *  
+ * Initializes the proc report module. Converts the linked list
+ * return by get_proc_data() to an array, initializes the proc 
+ * file with proc_create and prints the proc data to the syslog.
  *
  */
-int pr_init (void) {
+int pr_init(void) {
     struct proc_dir_entry *ent;
     int i;
     ROOT = get_proc_data();
     p_data *curr = ROOT;
     PTABLE = kzalloc(sizeof(p_data*) * PROC_CNT, GFP_KERNEL);
-    for (i = 0; i < PROC_CNT; i++) {  // translate the linked list to an array for quick access for the iterator
+    for (i = 0; i < PROC_CNT; i++) {  // translate the linked list to an array for quick access for the seq iterator
         PTABLE[i] = curr;
-        printk(KERN_INFO "b4 curr value %lu\n", curr); // verify with p->total_vm
         curr = curr->next;
-        printk(KERN_INFO "after curr value %lu\n", curr); // verify with p->total_vm
     }
-    ent = proc_create("proc_report", 660, NULL, &ct_file_ops);
+    ent = proc_create("proc_report", 0666, NULL, &ct_file_ops);
+    log_proc_data();
   return 0;
 }
 
+void log_proc_data(void) {
+    printk(KERN_INFO "PROCESS REPORT:\n"); // verify with p->total_vm
+    printk(KERN_INFO "proc_id,proc_name,contig_pages,noncontig_pages,total_pages\n");
+    int i;
+    for (i = 0; i < PROC_CNT; i++) {
+        p_data *p_info = PTABLE[i];
+        printk(KERN_INFO "%lu,%s,%lu,%lu,%lu\n", p_info->pid, p_info->name, p_info->cp, p_info->ncp, p_info->tp);
+    }
+    printk(KERN_INFO "TOTALS,,%lu,%lu,%lu\n", TOTAL_CPAGES, TOTAL_PAGES - TOTAL_CPAGES, TOTAL_PAGES);
+}
+
+/*
+ * Initializes the seq iterator used to track UM read()
+ * positions in the virtual file. In this case the iterator
+ * is simply an integer corresponding an index into PTABLE.
+ *
+ * Adapted from Documentation/filesystems/seq_file.rst.
+ *
+ * param: s (seq_file*): a pointer to the seq_file struct containing
+ *                       info on this virtual file
+ * param: pos (loff_t*): a pointer to an offset into the virtual file
+ *
+ * return: the newly initialized offset
+ *                       
+ */
 static void *ct_seq_start(struct seq_file *s, loff_t *pos) {
     loff_t *spos = kmalloc(sizeof(loff_t), GFP_KERNEL);
-    if (!spos || *pos >= PROC_CNT)
+    if (!spos || *pos >= PROC_CNT)  // EOF requested, return NULL
         return NULL;
     *spos = *pos;
     return spos;
 }
 
+/*
+ * Increments the seq iterator by one.
+ *
+ * Adapted from Documentation/filesystems/seq_file.rst.
+ *
+ * param: s (seq_file*): a pointer to the seq_file struct containing
+ *                       info on this virtual file
+ * param: pos (loff_t*): (OUT) a pointer to an offset into the virtual file
+ * param: v (void*): the current value of the iterator
+ *
+ * return: the new iterator
+ *                       
+ */
 static void *ct_seq_next(struct seq_file *s, void *v, loff_t *pos) {
     loff_t *spos = v;
-    if (*spos == PROC_CNT - 1)
+    if (*spos == PROC_CNT - 1)  // EOF reached, return NULL
         return NULL;
     *pos = ++*spos;
     return spos;
 }
 
+/*
+ * Frees the allocated offset.
+ *
+ * Adapted from Documentation/filesystems/seq_file.rst.
+ *
+ * param: s (seq_file*): a pointer to the seq_file struct containing
+ *                       info on this virtual file
+ * param: pos (loff_t*): (OUT) a pointer to an offset into the virtual file
+ *                       
+ */
 static void ct_seq_stop(struct seq_file *s, void *v) {
     kfree(v);
 }
 
+/*
+ * Displays a single line of the virtual file based on the offset value
+ * v. In this case, a single line of the virtual file is a line of the CSV
+ * containing data from PTABLE[*v]. If the offset requested is the first or
+ * last additional lines are printed.
+ *
+ * ADapted from Documentation/filesystems/seq_file.rst.
+ *
+ * param: s (seq_file*): a pointer to the seq_file struct containing
+ *                       info on this virtual file
+ * param: pos (loff_t*): (OUT) a pointer to an offset into the virtual file
+ *                       
+ */
 static int ct_seq_show(struct seq_file *s, void *v) {
     loff_t *spos = v;
     if (*spos == 0) {
         seq_printf(s, "PROCESS REPORT:\n");
-        seq_printf(s, "proc_id,proc_name,contig_pages,noncontig_pages,total_pages:\n");
+        seq_printf(s, "proc_id,proc_name,contig_pages,noncontig_pages,total_pages\n");
     }
     p_data *p_info = PTABLE[*spos];
     seq_printf(s, "%lu,%s,%lu,%lu,%lu\n", p_info->pid, p_info->name, p_info->cp, p_info->ncp, p_info->tp);
     if (*spos == PROC_CNT - 1) {
-        seq_printf(s, "TOTALS:,,%lu,%lu,%lu\n", TOTAL_CPAGES, TOTAL_PAGES - TOTAL_CPAGES, TOTAL_PAGES);
+        seq_printf(s, "TOTALS,,%lu,%lu,%lu\n", TOTAL_CPAGES, TOTAL_PAGES - TOTAL_CPAGES, TOTAL_PAGES);
     }
     return 0;
 }
 
+/*
+ * Initializes the seq iterator by calling seq_open.
+ *
+ * See Documentation/filesystems/seq_file.rst for more details.                       
+ */
 static int ct_open(struct inode *inode, struct file *file) {
         return seq_open(file, &ct_seq_ops);
 }
@@ -153,7 +223,6 @@ p_data *get_proc_data(void) {
         p_info->tp = pc;
         p_info->cp = cc;
         p_info->ncp = pc - cc;
-        printk(KERN_INFO "[FROM FUNC]NAME: %s, PAGES: %lu, PID: %lu, CP: %lu, NCP: %lu\n", p_info->name, p_info->tp, p_info->pid, p_info->cp, p_info->ncp); // verify with p->total_vm
         last = p_info;
         p_info->next = kzalloc(sizeof(p_data), GFP_KERNEL);
         p_info = p_info->next;
@@ -213,12 +282,22 @@ unsigned long vp_translate(unsigned long vpage, struct mm_struct *mm) {
     return addr;
 }
 
+/*
+ * Frees all memory allocated for the linked list and PTABLE.
+ *
+ */
 void pr_cleanup(void) {
-    // free mem, etc.
-  printk(KERN_INFO "helloModule: performing cleanup of module\n");
+    p_data *curr = ROOT, *free;
+    int i;
+    for (i = 0; i < PROC_CNT; i++) {  // translate the linked list to an array for quick access for the seq iterator
+        free = curr;
+        curr = curr->next;
+        kfree(free->name);
+        kfree(free);
+    }
+    kfree(PTABLE);
 }
 
 MODULE_LICENSE("GPL");
 module_init(pr_init);
 module_exit(pr_cleanup);
-
