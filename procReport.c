@@ -11,7 +11,7 @@
  * 4. Number of non-contiguously allocated pages 
  * 5. Total number allocated pages
  *
- * To display the procfile the seq_file iterator is used. More details can be found in the linux source
+ * To display the procfile the seq_file iterator is used. More details can be found in the Linux source
  * at Documentation/filesystems/seq_file.rst.
  *
  * Spencer Little - mrlittle@uw.edu
@@ -31,6 +31,7 @@
 
 p_data *ROOT;
 p_data **PTABLE;
+struct proc_dir_entry *PROC_ENT;
 int PROC_CNT = 0;
 int TOTAL_PAGES = 0;
 int TOTAL_CPAGES = 0;
@@ -56,29 +57,32 @@ static const struct proc_ops ct_file_ops = {
  *
  */
 int pr_init(void) {
-    struct proc_dir_entry *ent;
     int i;
     ROOT = get_proc_data();
-    p_data *curr = ROOT;
     PTABLE = kzalloc(sizeof(p_data*) * PROC_CNT, GFP_KERNEL);
+    p_data *curr = ROOT;
     for (i = 0; i < PROC_CNT; i++) {  // translate the linked list to an array for quick access for the seq iterator
         PTABLE[i] = curr;
         curr = curr->next;
     }
-    ent = proc_create("proc_report", 0666, NULL, &ct_file_ops);
+    PROC_ENT = proc_create("proc_report", 0666, NULL, &ct_file_ops);
     log_proc_data();
   return 0;
 }
 
+/*
+ * Writes the process data in PTABLE to the syslog in CSV format.
+ *
+ */
 void log_proc_data(void) {
-    printk(KERN_INFO "PROCESS REPORT:\n"); // verify with p->total_vm
+    printk(KERN_INFO "PROCESS REPORT:\n");
     printk(KERN_INFO "proc_id,proc_name,contig_pages,noncontig_pages,total_pages\n");
     int i;
     for (i = 0; i < PROC_CNT; i++) {
         p_data *p_info = PTABLE[i];
-        printk(KERN_INFO "%lu,%s,%lu,%lu,%lu\n", p_info->pid, p_info->name, p_info->cp, p_info->ncp, p_info->tp);
+        printk(KERN_INFO "%d,%s,%d,%d,%d\n", p_info->pid, p_info->name, p_info->cp, p_info->ncp, p_info->tp);
     }
-    printk(KERN_INFO "TOTALS,,%lu,%lu,%lu\n", TOTAL_CPAGES, TOTAL_PAGES - TOTAL_CPAGES, TOTAL_PAGES);
+    printk(KERN_INFO "TOTALS,,%d,%d,%d\n", TOTAL_CPAGES, TOTAL_PAGES - TOTAL_CPAGES, TOTAL_PAGES);
 }
 
 /*
@@ -118,14 +122,14 @@ static void *ct_seq_start(struct seq_file *s, loff_t *pos) {
  */
 static void *ct_seq_next(struct seq_file *s, void *v, loff_t *pos) {
     loff_t *spos = v;
-    if (*spos == PROC_CNT - 1)  // EOF reached, return NULL
-        return NULL;
     *pos = ++*spos;
+    if (*spos == PROC_CNT) // EOF reached, return NULL
+        return NULL;
     return spos;
 }
 
 /*
- * Frees the allocated offset.
+ * Frees the allocated iterator.
  *
  * Adapted from Documentation/filesystems/seq_file.rst.
  *
@@ -158,9 +162,9 @@ static int ct_seq_show(struct seq_file *s, void *v) {
         seq_printf(s, "proc_id,proc_name,contig_pages,noncontig_pages,total_pages\n");
     }
     p_data *p_info = PTABLE[*spos];
-    seq_printf(s, "%lu,%s,%lu,%lu,%lu\n", p_info->pid, p_info->name, p_info->cp, p_info->ncp, p_info->tp);
+    seq_printf(s, "%d,%s,%d,%d,%d\n", p_info->pid, p_info->name, p_info->cp, p_info->ncp, p_info->tp);
     if (*spos == PROC_CNT - 1) {
-        seq_printf(s, "TOTALS,,%lu,%lu,%lu\n", TOTAL_CPAGES, TOTAL_PAGES - TOTAL_CPAGES, TOTAL_PAGES);
+        seq_printf(s, "TOTALS,,%d,%d,%d\n", TOTAL_CPAGES, TOTAL_PAGES - TOTAL_CPAGES, TOTAL_PAGES);
     }
     return 0;
 }
@@ -229,7 +233,7 @@ p_data *get_proc_data(void) {
         PROC_CNT++;
     }
     rcu_read_unlock();
-    if (PROC_CNT > 0) {  // free the last allocated p_data struct
+    if (PROC_CNT > 0) {  // free the last unnecessarily allocated p_data struct
         last->next = NULL;
         kfree(p_info);
     }
@@ -283,13 +287,15 @@ unsigned long vp_translate(unsigned long vpage, struct mm_struct *mm) {
 }
 
 /*
- * Frees all memory allocated for the linked list and PTABLE.
+ * Frees all memory allocated for the linked list and PTABLE and removes
+ * the proc file entry.
  *
  */
 void pr_cleanup(void) {
     p_data *curr = ROOT, *free;
     int i;
-    for (i = 0; i < PROC_CNT; i++) {  // translate the linked list to an array for quick access for the seq iterator
+    proc_remove(PROC_ENT);
+    for (i = 0; i < PROC_CNT; i++) { 
         free = curr;
         curr = curr->next;
         kfree(free->name);

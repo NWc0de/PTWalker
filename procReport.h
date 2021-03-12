@@ -21,7 +21,6 @@ typedef struct process_data {
 } p_data;
 
 p_data *get_proc_data(void);
-static ssize_t read_procdata(struct file*, char __user*, size_t, loff_t*);
 unsigned long vp_translate(unsigned long, struct mm_struct*);
 void log_proc_data(void);
 
